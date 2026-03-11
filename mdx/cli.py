@@ -10,6 +10,8 @@ import shlex
 from pathlib import Path
 from typing import List, Tuple, Optional
 import re
+import tty
+import termios
 
 try:
     from rich.console import Console
@@ -51,6 +53,10 @@ class MDXViewer:
         self.lines = self.content.split('\n')
         self.code_blocks: List[CodeBlock] = []
         self._extract_code_blocks()
+        
+        # Pagination state
+        self.current_page = 0
+        self.lines_per_page = console.height - 12
     
     def _extract_code_blocks(self):
         """Extract all code blocks with their language"""
@@ -95,35 +101,55 @@ class MDXViewer:
         """Render the markdown file with proper formatting"""
         console.clear()
         
+        # Calculate pagination
+        total_pages = max(1, (len(self.lines) + self.lines_per_page - 1) // self.lines_per_page)
+        self.current_page = min(start_line // self.lines_per_page, total_pages - 1)
+        
+        # Get page content
+        start = self.current_page * self.lines_per_page
+        end = min(start + self.lines_per_page, len(self.lines))
+        page_lines = self.lines[start:end]
+        
         # Print header
         word_count = len(self.content.split())
         console.print(Panel(
             f"[bold cyan]{self.filepath.name}[/bold cyan]",
-            subtitle=f"📄 {word_count} words | {len(self.code_blocks)} code blocks | {len(self.lines)} lines",
+            subtitle=f"📄 {word_count} words | {len(self.code_blocks)} code blocks | "
+                    f"Page {self.current_page + 1}/{total_pages} | Lines {start+1}-{end}",
             box=box.DOUBLE,
             style="cyan"
         ))
         console.print()
         
-        # Render markdown content
-        self._render_content(start_line)
+        # Render page content
+        page_content = '\n'.join(page_lines)
+        content_without_code = self._remove_code_blocks(page_content)
+        
+        md = Markdown(content_without_code, code_theme=self.theme)
+        console.print(md)
+        
+        # Show progress bar
+        self._render_progress_bar(start, end)
         
         # Show navigation hint
         console.print()
-        console.print("[dim]↑↓: 翻页 | t: 目录 | /: 搜索 | q: 退出[/dim]")
+        console.print("[dim]↑↓/j/k: 翻页 | g/G: 开头/结尾 | t: 目录 | /: 搜索 | q: 退出 | n: 下一个搜索 | e: 执行代码块[/dim]")
         
         if self.execute and self.code_blocks:
             self._execute_code_blocks()
     
+    def _render_progress_bar(self, start: int, end: int):
+        """Render a progress bar"""
+        total = len(self.lines)
+        bar_width = 30
+        filled = int(bar_width * end / total)
+        bar = "█" * filled + "░" * (bar_width - filled)
+        console.print(f"[dim]|{bar}| {start+1}-{end}/{total}[/dim]")
+    
     def _render_content(self, start_line: int = 0):
         """Render markdown content with proper styling"""
-        # Remove code blocks for cleaner display
         content = self._remove_code_blocks(self.content)
-        
-        # Use rich's Markdown parser
         md = Markdown(content, code_theme=self.theme)
-        
-        # Render with padding
         console.print(md)
     
     def show_toc(self):
@@ -150,6 +176,32 @@ class MDXViewer:
         
         console.print(table)
     
+    def show_help(self):
+        """Show help message"""
+        help_text = """
+[bold cyan]╭─ MDX 快捷键 ─╮[/bold cyan]
+│                    │
+│ [yellow]翻页:[/yellow]          │
+│   ↑/k 或 j    上一页          │
+│   ↓/l 或 k   下一页          │
+│   g           开头            │
+│   G           结尾            │
+│                    │
+│ [yellow]导航:[/yellow]          │
+│   t            目录            │
+│   /            搜索            │
+│   n            下一个搜索      │
+│   p            上一个搜索      │
+│   :N           跳转到第N行    │
+│                    │
+│ [yellow]其他:[/yellow]          │
+│   e            执行代码块      │
+│   h            帮助            │
+│   q            退出            │
+│ [cyan]╰───────────────────╯[/cyan]
+        """
+        console.print(help_text)
+    
     def _execute_code_blocks(self):
         """Execute all code blocks"""
         console.print()
@@ -158,7 +210,6 @@ class MDXViewer:
         for i, block in enumerate(self.code_blocks, 1):
             console.print(f"\n[cyan]--- Code Block {i}: {block.language} (line {block.line_number}) ---[/cyan]")
             
-            # Show code with syntax highlighting
             syntax = Syntax(
                 block.code, 
                 block.language if block.language != "text" else "bash", 
@@ -167,7 +218,6 @@ class MDXViewer:
             )
             console.print(syntax)
             
-            # Execute
             if block.language in ["bash", "sh", "shell", ""]:
                 self._run_command(block.code)
             elif block.language == "python":
@@ -209,37 +259,87 @@ class MDXViewer:
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
     
+    def _get_key(self):
+        """Get a single key press"""
+        try:
+            old_settings = termios.tcgetattr(sys.stdin)
+            try:
+                tty.setcbreak(sys.stdin.fileno())
+                key = sys.stdin.read(1)
+            finally:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+            return key
+        except:
+            return ""
+    
     def interactive(self):
-        """Interactive mode with navigation"""
-        current_line = 0
-        lines_per_page = console.height - 10
+        """Interactive mode with full navigation"""
+        self.lines_per_page = console.height - 12
+        search_matches = []
+        current_search_idx = 0
         
         while True:
-            self.render(current_line)
+            self.render(self.current_page * self.lines_per_page)
             
             try:
+                console.print()
                 key = console.input("\n[cyan]>[/cyan] ")
+                
+                if not key:
+                    continue
+                    
                 key = key.strip().lower()
                 
                 if key == 'q' or key == 'quit':
                     break
-                elif key == 'up' or key == 'k':
-                    current_line = max(0, current_line - lines_per_page)
-                elif key == 'down' or key == 'j':
-                    current_line = min(len(self.lines), current_line + lines_per_page)
+                elif key in ['k', '上', '\x1b[A'] or key == '' and False:  # Up - handled below
+                    self.current_page = max(0, self.current_page - 1)
+                elif key in ['j', '下', '\x1b[B']:  # Down
+                    total_pages = (len(self.lines) + self.lines_per_page - 1) // self.lines_per_page
+                    self.current_page = min(total_pages - 1, self.current_page + 1)
+                elif key == 'g':
+                    self.current_page = 0
+                elif key == 'G':
+                    total_pages = (len(self.lines) + self.lines_per_page - 1) // self.lines_per_page
+                    self.current_page = total_pages - 1
                 elif key == 't' or key == 'toc':
                     self.show_toc()
                     console.input("\n[dim]Press Enter to continue...[/dim]")
+                elif key == 'h' or key == 'help':
+                    self.show_help()
+                    console.input("\n[dim]Press Enter to continue...[/dim]")
                 elif key == '/':
                     search_term = console.input("[cyan]Search: [/cyan]")
-                    self._search(search_term)
-                elif key.isdigit():
-                    line_num = int(key)
+                    if search_term:
+                        search_matches = []
+                        for i, line in enumerate(self.lines, 1):
+                            if search_term.lower() in line.lower():
+                                search_matches.append(i)
+                        if search_matches:
+                            console.print(f"[green]Found {len(search_matches)} matches[/green]")
+                            current_search_idx = 0
+                            self.current_page = (search_matches[0] - 1) // self.lines_per_page
+                        else:
+                            console.print(f"[red]No matches found[/red]")
+                            console.input("\n[dim]Press Enter to continue...[/dim]")
+                elif key == 'n' and search_matches:
+                    current_search_idx = (current_search_idx + 1) % len(search_matches)
+                    self.current_page = (search_matches[current_search_idx] - 1) // self.lines_per_page
+                    console.print(f"[dim]Match {current_search_idx + 1}/{len(search_matches)}[/dim]")
+                elif key == 'p' and search_matches:
+                    current_search_idx = (current_search_idx - 1) % len(search_matches)
+                    self.current_page = (search_matches[current_search_idx] - 1) // self.lines_per_page
+                    console.print(f"[dim]Match {current_search_idx + 1}/{len(search_matches)}[/dim]")
+                elif key == 'e':
+                    self._execute_code_blocks()
+                    console.input("\n[dim]Press Enter to continue...[/dim]")
+                elif key.startswith(':') and key[1:].isdigit():
+                    line_num = int(key[1:])
                     if 1 <= line_num <= len(self.lines):
-                        self._show_line(line_num)
+                        self.current_page = (line_num - 1) // self.lines_per_page
                 else:
-                    # Try to parse as line number or command
                     pass
+                    
             except (KeyboardInterrupt, EOFError):
                 break
         
@@ -283,8 +383,9 @@ def main():
     @click.option('--theme', '-m', default='monokai', help='Syntax highlighting theme')
     @click.option('--interactive', '-i', is_flag=True, help='Interactive mode')
     @click.option('--search', '-s', type=str, help='Search in file')
-    @click.version_option(version='0.2.0', prog_name='mdx')
-    def cli(file: str, execute: bool, toc: bool, line: int, theme: str, interactive: bool, search: str):
+    @click.option('--page', '-p', type=int, help='Go to specific page')
+    @click.version_option(version='0.3.0', prog_name='mdx')
+    def cli(file: str, execute: bool, toc: bool, line: int, theme: str, interactive: bool, search: str, page: int):
         """
         MDX - A beautiful Markdown viewer for terminal
         
@@ -303,7 +404,11 @@ def main():
         elif interactive:
             viewer.interactive()
         elif line:
-            viewer._show_line(line)
+            lines_per_page = console.height - 12
+            viewer.current_page = (line - 1) // lines_per_page
+            viewer.render(viewer.current_page * lines_per_page)
+        elif page:
+            viewer.render((page - 1) * (console.height - 12))
         else:
             viewer.render()
     
