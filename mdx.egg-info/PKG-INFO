@@ -1,0 +1,99 @@
+Metadata-Version: 2.4
+Name: mdx
+Version: 0.1.0
+Summary: A beautiful Markdown viewer for terminal with code execution support
+Author-email: Your Name <you@example.com>
+License: MIT
+Project-URL: Homepage, https://github.com/yourname/mdx
+Project-URL: Repository, https://github.com/yourname/mdx
+Keywords: markdown,terminal,cli,viewer
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Requires-Dist: click>=8.0.0
+Requires-Dist: rich>=13.0.0
+Requires-Dist: pygments>=2.14.0
+Requires-Dist: markdown>=3.4.0
+
+# MDX - Markdown Viewer for Terminal
+
+<p align="center">
+  <img src="https://img.shields.io/pypi/v/mdx" alt="PyPI">
+  <img src="https://img.shields.io/pypi/l/mdx" alt="License">
+  <img src="https://img.shields.io/pypi/pyversions/mdx" alt="Python">
+</p>
+
+A beautiful Markdown viewer for terminal with code execution support.
+
+## Features
+
+- 🎨 Beautiful syntax highlighting with multiple themes
+- 📑 Table of contents navigation
+- ⚡ Execute code blocks directly (bash, python)
+- 🔍 Search within documents
+- 📖 Multiple rendering modes
+
+## Installation
+
+```bash
+pip install mdx
+```
+
+## Usage
+
+```bash
+# View a markdown file
+mdx README.md
+
+# Show table of contents
+mdx README.md --toc
+
+# Execute code blocks
+mdx README.md --execute
+
+# Jump to specific line
+mdx README.md --line 100
+
+# Use different theme
+mdx README.md --theme dracula
+```
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `-e, --execute` | Execute code blocks |
+| `-t, --toc` | Show table of contents |
+| `-l, --line` | Jump to specific line |
+| `-m, --theme` | Syntax highlighting theme |
+
+## Themes
+
+Available syntax highlighting themes:
+- monokai (default)
+- dracula
+- github-dark
+- nord
+- solarized-dark
+
+## Example
+
+```bash
+# Read documentation
+mdx docs/linux-0.11-filesystem-analysis.md --toc
+
+# Execute tutorial code blocks
+mdx docs/tutorial.md --execute
+```
+
+## License
+
+MIT License

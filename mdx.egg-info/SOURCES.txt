@@ -1,0 +1,10 @@
+README.md
+pyproject.toml
+mdx/__init__.py
+mdx/cli.py
+mdx.egg-info/PKG-INFO
+mdx.egg-info/SOURCES.txt
+mdx.egg-info/dependency_links.txt
+mdx.egg-info/entry_points.txt
+mdx.egg-info/requires.txt
+mdx.egg-info/top_level.txt

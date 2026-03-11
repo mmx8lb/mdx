@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mdx"
+version = "0.1.0"
+description = "A beautiful Markdown viewer for terminal with code execution support"
+authors = [
+    {name = "Your Name", email = "you@example.com"}
+]
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+keywords = ["markdown", "terminal", "cli", "viewer"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "click>=8.0.0",
+    "rich>=13.0.0",
+    "pygments>=2.14.0",
+    "markdown>=3.4.0",
+]
+
+[project.scripts]
+mdx = "mdx.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/yourname/mdx"
+Repository = "https://github.com/yourname/mdx"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mdx*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
