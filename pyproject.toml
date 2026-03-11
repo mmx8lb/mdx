@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mdx"
-version = "0.1.0"
+version = "0.2.0"
 description = "A beautiful Markdown viewer for terminal with code execution support"
 authors = [
     {name = "Your Name", email = "you@example.com"}
