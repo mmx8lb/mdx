@@ -1,33 +1,17 @@
 #!/usr/bin/env python3
 """
 MDX - A beautiful Markdown viewer for terminal with code execution support
+Uses curses for smooth rendering
 """
 
 import os
 import sys
 import subprocess
-import shlex
+import curses
+import shutil
 from pathlib import Path
 from typing import List, Tuple, Optional
 import re
-import tty
-import termios
-
-try:
-    from rich.console import Console
-    from rich.syntax import Syntax
-    from rich.markdown import Markdown, MarkdownElement
-    from rich.panel import Panel
-    from rich.table import Table
-    from rich.text import Text
-    from rich import box
-    from rich.style import Style
-    from rich.theme import Theme
-except ImportError:
-    print("Error: rich library not found. Install with: pip install rich")
-    sys.exit(1)
-
-console = Console()
 
 
 class CodeBlock:
@@ -39,12 +23,12 @@ class CodeBlock:
 
 
 class MDXViewer:
-    """Main viewer class with proper markdown rendering"""
+    """Main viewer class with curses rendering"""
     
     def __init__(self, filepath: str, execute: bool = False, theme: str = "monokai"):
         self.filepath = Path(filepath)
         if not self.filepath.exists():
-            console.print(f"[red]Error: File not found: {filepath}[/red]")
+            print(f"Error: File not found: {filepath}")
             sys.exit(1)
         
         self.execute = execute
@@ -54,12 +38,22 @@ class MDXViewer:
         self.code_blocks: List[CodeBlock] = []
         self._extract_code_blocks()
         
-        # Pagination state
-        self.current_page = 0
-        self.lines_per_page = console.height - 12
+        # Remove code blocks from display lines
+        self.display_lines = self._remove_code_blocks_from_lines(self.lines)
+        
+        # Cache
+        self._word_count = len(self.content.split())
+        
+        # Scroll position
+        self.scroll_offset = 0
+        
+        # Search state
+        self.search_term = ""
+        self.search_matches: List[int] = []
+        self.search_current = 0
     
     def _extract_code_blocks(self):
-        """Extract all code blocks with their language"""
+        """Extract all code blocks"""
         in_code_block = False
         current_lang = ""
         current_code = []
@@ -81,9 +75,8 @@ class MDXViewer:
             elif in_code_block:
                 current_code.append(line)
     
-    def _remove_code_blocks(self, content: str) -> str:
-        """Remove code blocks from content for display"""
-        lines = content.split('\n')
+    def _remove_code_blocks_from_lines(self, lines: List[str]) -> List[str]:
+        """Remove code blocks from lines"""
         result = []
         in_block = False
         
@@ -95,64 +88,240 @@ class MDXViewer:
             if not in_block:
                 result.append(line)
         
-        return '\n'.join(result)
+        return result
     
-    def render(self, start_line: int = 0):
-        """Render the markdown file with proper formatting"""
-        console.clear()
+    def _colorize_line(self, line: str, width: int):
+        """Parse markdown line and return colored segments
+        Returns: [(text, curses_attr), ...]
+        """
+        segments = []
+        stripped = line.strip()
         
-        # Calculate pagination
-        total_pages = max(1, (len(self.lines) + self.lines_per_page - 1) // self.lines_per_page)
-        self.current_page = min(start_line // self.lines_per_page, total_pages - 1)
+        # Heading (# ## ###)
+        if stripped.startswith('######'):
+            title = stripped[6:].strip()  # Remove ######
+            return [(title[:width], curses.A_BOLD | curses.color_pair(5))]
+        elif stripped.startswith('#####'):
+            title = stripped[5:].strip()
+            return [(title[:width], curses.A_BOLD | curses.color_pair(4))]
+        elif stripped.startswith('####'):
+            title = stripped[4:].strip()
+            return [(title[:width], curses.A_BOLD | curses.color_pair(3))]
+        elif stripped.startswith('###'):
+            title = stripped[3:].strip()
+            return [(title[:width], curses.A_BOLD | curses.color_pair(2))]
+        elif stripped.startswith('##'):
+            title = stripped[2:].strip()
+            return [(title[:width], curses.A_BOLD | curses.color_pair(1))]
+        elif stripped.startswith('#'):
+            title = stripped[1:].strip()
+            return [(title[:width], curses.A_BOLD | curses.color_pair(1))]
         
-        # Get page content
-        start = self.current_page * self.lines_per_page
-        end = min(start + self.lines_per_page, len(self.lines))
-        page_lines = self.lines[start:end]
+        # Horizontal rule (--- or ***)
+        if stripped.startswith('---') or stripped.startswith('***'):
+            return [('─' * (width - 1), curses.A_DIM)]
         
-        # Print header
-        word_count = len(self.content.split())
-        console.print(Panel(
-            f"[bold cyan]{self.filepath.name}[/bold cyan]",
-            subtitle=f"📄 {word_count} words | {len(self.code_blocks)} code blocks | "
-                    f"Page {self.current_page + 1}/{total_pages} | Lines {start+1}-{end}",
-            box=box.DOUBLE,
-            style="cyan"
-        ))
-        console.print()
+        # List items (- * 1. )
+        if stripped.startswith('- ') or stripped.startswith('* '):
+            indent = len(line) - len(line.lstrip())
+            content = line.lstrip()[2:]  # Remove "- " or "* "
+            return [
+                (line[:indent + 2], curses.color_pair(6)),
+                (content[:width - indent - 2], 0)
+            ]
         
-        # Render page content
-        page_content = '\n'.join(page_lines)
-        content_without_code = self._remove_code_blocks(page_content)
+        # Numbered list (1. 2. )
+        import re
+        num_match = re.match(r'^(\s*)(\d+)\.\s+(.*)$', line)
+        if num_match:
+            indent = len(num_match.group(1))
+            num = num_match.group(2)
+            rest = num_match.group(3)
+            return [
+                (line[:indent] + num + ".", curses.color_pair(6)),
+                (rest[:width - indent - len(num) - 2], 0)
+            ]
         
-        md = Markdown(content_without_code, code_theme=self.theme)
-        console.print(md)
+        # Table separator (|---|---|)
+        if stripped.startswith('|') and all(c in '|-' for c in stripped.replace('|', '')):
+            return [('─' * (width - 1), curses.A_DIM)]
         
-        # Show progress bar
-        self._render_progress_bar(start, end)
+        # Table (| col | col |)
+        if '|' in line and not stripped.startswith('|'):
+            parts = line.split('|')
+            result = []
+            x = 0
+            for j, part in enumerate(parts):
+                if j > 0:
+                    result.append(('|', 0))
+                attr = curses.color_pair(7) if 0 < j < len(parts) - 1 else 0
+                result.append((part, attr))
+            return result
         
-        # Show navigation hint
-        console.print()
-        console.print("[dim]↑↓/j/k: 翻页 | g/G: 开头/结尾 | t: 目录 | /: 搜索 | q: 退出 | n: 下一个搜索 | e: 执行代码块[/dim]")
+        # Bold (**text**) and Italic (*text*)
+        if '**' in line or '*' in line:
+            segments = []
+            last_end = 0
+            # Find all **text**
+            for match in re.finditer(r'\*\*(.+?)\*\*', line):
+                if match.start() > last_end:
+                    segments.append((line[last_end:match.start()], 0))
+                segments.append((match.group(1), curses.A_BOLD))  # Show text without **
+                last_end = match.end()
+            # Find single *text* (not **)
+            for match in re.finditer(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', line):
+                if match.start() > last_end:
+                    segments.append((line[last_end:match.start()], 0))
+                segments.append((match.group(1), curses.A_ITALIC))
+                last_end = match.end()
+            if last_end < len(line):
+                segments.append((line[last_end:], 0))
+            if segments:
+                return segments
         
-        if self.execute and self.code_blocks:
-            self._execute_code_blocks()
+        # Default
+        return [(line[:width], 0)]
     
-    def _render_progress_bar(self, start: int, end: int):
-        """Render a progress bar"""
-        total = len(self.lines)
-        bar_width = 30
-        filled = int(bar_width * end / total)
-        bar = "█" * filled + "░" * (bar_width - filled)
-        console.print(f"[dim]|{bar}| {start+1}-{end}/{total}[/dim]")
+    def _get_screen_size(self):
+        """Get current terminal size"""
+        try:
+            return shutil.get_terminal_size()
+        except:
+            return os.terminal_size((80, 24))
     
-    def _render_content(self, start_line: int = 0):
-        """Render markdown content with proper styling"""
-        content = self._remove_code_blocks(self.content)
-        md = Markdown(content, code_theme=self.theme)
-        console.print(md)
+    def render(self, stdscr, force=False):
+        """Render using curses - optimized for smooth scrolling"""
+        # Get current screen size
+        size = self._get_screen_size()
+        height, width = size.lines, size.columns
+        
+        # Check if resize needed
+        if not hasattr(self, '_last_height') or self._last_height != height:
+            self._last_height = height
+            force = True
+        
+        # Only clear if forced (first draw or resize)
+        if force:
+            stdscr.clear()
+        
+        # Reserve space for header (3 lines) and footer
+        content_height = height - 5
+        
+        total_lines = len(self.display_lines)
+        start = self.scroll_offset
+        end = min(start + content_height, total_lines)
+        
+        # Draw header
+        title = self.filepath.name[:width-10]
+        stdscr.addstr(0, 0, " " * (width - 1))
+        stdscr.addstr(0, 0, f" {title} ", curses.A_REVERSE | curses.A_BOLD)
+        
+        info = f" {self._word_count} words | {start+1}-{end}/{total_lines} | j/k:滚动 q:退出 /:搜索 t:目录 "
+        stdscr.addstr(1, 0, " " * (width - 1))
+        stdscr.addstr(1, 0, info[:width-1], curses.A_DIM)
+        
+        # Draw separator
+        sep = "─" * (width - 1)
+        stdscr.addstr(2, 0, sep, curses.A_DIM)
+        
+        # Erase content area only (not whole screen)
+        for i in range(3, height - 2):
+            stdscr.addstr(i, 0, " " * (width - 1))
+        
+        # Draw content with colors
+        for i in range(start, end):
+            line_idx = i - start + 3
+            if line_idx >= height - 2:
+                break
+            
+            line = self.display_lines[i]
+            if not line:
+                continue
+            
+            # Get colored segments
+            segments = self._colorize_line(line, width)
+            
+            x = 0
+            for text, attr in segments:
+                if x >= width - 1:
+                    break
+                text = text[:width - x - 1]
+                try:
+                    stdscr.addstr(line_idx, x, text, attr)
+                except:
+                    pass
+                x += len(text)
+        
+        # Progress bar
+        if total_lines > content_height:
+            bar_width = min(40, width - 10)
+            progress = start / (total_lines - content_height)
+            filled = int(bar_width * progress)
+            bar = "█" * filled + "░" * (bar_width - filled)
+            prog = f"│{bar}│ {int(progress*100)}%"
+            stdscr.addstr(height - 2, 0, prog, curses.A_DIM)
+        
+        # Use noutrefresh for double buffering
+        stdscr.noutrefresh()
+        curses.doupdate()
     
-    def show_toc(self):
+    def scroll_down(self, lines: int = 1):
+        """Scroll down"""
+        size = self._get_screen_size()
+        content_height = size.lines - 5
+        max_scroll = max(0, len(self.display_lines) - content_height)
+        self.scroll_offset = min(max_scroll, self.scroll_offset + lines)
+    
+    def scroll_up(self, lines: int = 1):
+        """Scroll up"""
+        self.scroll_offset = max(0, self.scroll_offset - lines)
+    
+    def scroll_to_top(self):
+        """Scroll to top"""
+        self.scroll_offset = 0
+    
+    def scroll_to_bottom(self):
+        """Scroll to bottom"""
+        size = self._get_screen_size()
+        content_height = size.lines - 5
+        max_scroll = max(0, len(self.display_lines) - content_height)
+        self.scroll_offset = max_scroll
+    
+    def do_search(self, stdscr):
+        """Search dialog"""
+        stdscr.addstr(curses.LINES - 1, 0, "/" + " " * (curses.COLS - 2), curses.A_REVERSE)
+        stdscr.clrtoeol()
+        curses.echo()
+        
+        stdscr.addstr(curses.LINES - 1, 1, "/")
+        search_term = stdscr.getstr(curses.LINES - 1, 2, 50).decode('utf-8')
+        
+        curses.noecho()
+        
+        if search_term:
+            self.search_term = search_term
+            self.search_matches = []
+            for i, line in enumerate(self.display_lines, 1):
+                if search_term.lower() in line.lower():
+                    self.search_matches.append(i)
+            
+            if self.search_matches:
+                self.search_current = 0
+                self.scroll_offset = max(0, self.search_matches[0] - 1)
+    
+    def next_search(self):
+        """Next search match"""
+        if self.search_matches:
+            self.search_current = (self.search_current + 1) % len(self.search_matches)
+            self.scroll_offset = max(0, self.search_matches[self.search_current] - 1)
+    
+    def prev_search(self):
+        """Previous search match"""
+        if self.search_matches:
+            self.search_current = (self.search_current - 1) % len(self.search_matches)
+            self.scroll_offset = max(0, self.search_matches[self.search_current] - 1)
+    
+    def show_toc(self, stdscr):
         """Show table of contents"""
         toc = []
         for i, line in enumerate(self.lines):
@@ -162,214 +331,170 @@ class MDXViewer:
                 title = match.group(2).strip()
                 toc.append((i + 1, level, title))
         
-        if not toc:
-            console.print("[dim]No headings found[/dim]")
-            return
+        stdscr.clear()
+        height, width = stdscr.getmaxyx()
         
-        table = Table(title="📑 Table of Contents", box=box.ROUNDED)
-        table.add_column("Line", style="dim", width=6)
-        table.add_column("Title", style="cyan")
+        stdscr.addstr(0, 0, " Table of Contents ", curses.A_REVERSE | curses.A_BOLD)
+        stdscr.addstr(1, 0, "─" * (width - 1), curses.A_DIM)
         
-        for line_num, level, title in toc:
+        for i, (line_num, level, title) in enumerate(toc[:height - 4]):
             indent = "  " * (level - 1)
-            table.add_row(str(line_num), f"{indent}{title}")
+            text = f"{line_num:4d}  {indent}{title}"[:width-1]
+            stdscr.addstr(i + 2, 0, text)
         
-        console.print(table)
+        stdscr.addstr(height - 1, 0, " Press any key to continue... ", curses.A_REVERSE)
+        stdscr.refresh()
+        stdscr.getch()
     
-    def show_help(self):
-        """Show help message"""
+    def show_help(self, stdscr):
+        """Show help"""
+        stdscr.clear()
+        height, width = stdscr.getmaxyx()
+        
         help_text = """
-[bold cyan]╭─ MDX 快捷键 ─╮[/bold cyan]
-│                    │
-│ [yellow]翻页:[/yellow]          │
-│   ↑/k 或 j    上一页          │
-│   ↓/l 或 k   下一页          │
-│   g           开头            │
-│   G           结尾            │
-│                    │
-│ [yellow]导航:[/yellow]          │
-│   t            目录            │
-│   /            搜索            │
-│   n            下一个搜索      │
-│   p            上一个搜索      │
-│   :N           跳转到第N行    │
-│                    │
-│ [yellow]其他:[/yellow]          │
-│   e            执行代码块      │
-│   h            帮助            │
-│   q            退出            │
-│ [cyan]╰───────────────────╯[/cyan]
+ MDX Help
+ ──────────────────────
+ j / ↓      向下滚动一行
+ k / ↑      向上滚动一行
+ 空格 / PgDn  向下一页
+ b / PgUp    向上一页
+ g           跳转开头
+ G           跳转结尾
+ /           搜索
+ n           下一个搜索
+ t           目录
+ q           退出
+ ──────────────────────
         """
-        console.print(help_text)
-    
-    def _execute_code_blocks(self):
-        """Execute all code blocks"""
-        console.print()
-        console.print(Panel("[bold yellow]⚡ Executing Code Blocks[/bold yellow]", box=box.ROUNDED))
         
-        for i, block in enumerate(self.code_blocks, 1):
-            console.print(f"\n[cyan]--- Code Block {i}: {block.language} (line {block.line_number}) ---[/cyan]")
+        for i, line in enumerate(help_text.split('\n')):
+            if i < height - 1:
+                stdscr.addstr(i + 1, 0, line[:width-1])
+        
+        stdscr.addstr(height - 1, 0, " Press any key to continue... ", curses.A_REVERSE)
+        stdscr.refresh()
+        stdscr.getch()
+    
+    def execute_code_blocks(self, stdscr):
+        """Execute code blocks"""
+        height, width = stdscr.getmaxyx()
+        
+        stdscr.clear()
+        stdscr.addstr(0, 0, " Executing Code Blocks ", curses.A_REVERSE | curses.A_BOLD)
+        
+        row = 2
+        for i, block in enumerate(self.code_blocks):
+            if row >= height - 3:
+                break
             
-            syntax = Syntax(
-                block.code, 
-                block.language if block.language != "text" else "bash", 
-                theme=self.theme,
-                line_numbers=False
-            )
-            console.print(syntax)
+            stdscr.addstr(row, 0, f"--- Block {i+1}: {block.language} ---")
+            row += 1
             
+            # Show code
+            code_lines = block.code.split('\n')[:5]
+            for line in code_lines:
+                if row < height - 3:
+                    stdscr.addstr(row, 0, f"  {line}"[:width-1])
+                    row += 1
+            
+            # Execute
+            result = ""
             if block.language in ["bash", "sh", "shell", ""]:
-                self._run_command(block.code)
+                try:
+                    r = subprocess.run(block.code, shell=True, capture_output=True, text=True, timeout=5)
+                    result = r.stdout or r.stderr
+                except:
+                    result = "Error"
             elif block.language == "python":
-                self._run_python(block.code)
-            else:
-                console.print(f"[dim]⚠ Skipping {block.language} (not executable)[/dim]")
+                try:
+                    r = subprocess.run(["python3", "-c", block.code], capture_output=True, text=True, timeout=5)
+                    result = r.stdout or r.stderr
+                except:
+                    result = "Error"
+            
+            if result and row < height - 3:
+                for line in result.split('\n')[:3]:
+                    stdscr.addstr(row, 0, f"  > {line}"[:width-1], curses.A_DIM)
+                    row += 1
+            row += 1
+        
+        stdscr.addstr(height - 1, 0, " Press any key to continue... ", curses.A_REVERSE)
+        stdscr.refresh()
+        stdscr.getch()
     
-    def _run_command(self, cmd: str):
-        """Run shell command"""
-        try:
-            result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, timeout=30
-            )
-            if result.stdout:
-                console.print(f"[green]{result.stdout}[/green]")
-            if result.stderr:
-                console.print(f"[red]{result.stderr}[/red]")
-            if not result.stdout and not result.stderr:
-                console.print("[dim]✓ Command executed successfully[/dim]")
-        except subprocess.TimeoutExpired:
-            console.print("[red]⏱ Command timeout[/red]")
-        except Exception as e:
-            console.print(f"[red]Error: {e}[/red]")
-    
-    def _run_python(self, code: str):
-        """Run Python code"""
-        try:
-            result = subprocess.run(
-                ["python3", "-c", code], capture_output=True, text=True, timeout=30
-            )
-            if result.stdout:
-                console.print(f"[green]{result.stdout}[/green]")
-            if result.stderr:
-                console.print(f"[red]{result.stderr}[/red]")
-            if not result.stdout and not result.stderr:
-                console.print("[dim]✓ Code executed successfully[/dim]")
-        except subprocess.TimeoutExpired:
-            console.print("[red]⏱ Code timeout[/red]")
-        except Exception as e:
-            console.print(f"[red]Error: {e}[/red]")
-    
-    def _get_key(self):
-        """Get a single key press"""
-        try:
-            old_settings = termios.tcgetattr(sys.stdin)
-            try:
-                tty.setcbreak(sys.stdin.fileno())
-                key = sys.stdin.read(1)
-            finally:
-                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-            return key
-        except:
-            return ""
-    
-    def interactive(self):
-        """Interactive mode with full navigation"""
-        self.lines_per_page = console.height - 12
-        search_matches = []
-        current_search_idx = 0
+    def interactive(self, stdscr):
+        """Interactive mode with curses"""
+        curses.curs_set(0)  # Hide cursor
+        stdscr.nodelay(True)  # Non-blocking input
+        
+        # Initialize colors
+        if curses.has_colors():
+            curses.start_color()
+            curses.use_default_colors()
+            # Color pairs: (fg, bg)
+            # 1: Cyan for h1
+            curses.init_pair(1, curses.COLOR_CYAN, -1)
+            # 2: Blue for h2
+            curses.init_pair(2, curses.COLOR_BLUE, -1)
+            # 3: Green for h3
+            curses.init_pair(3, curses.COLOR_GREEN, -1)
+            # 4: Yellow for h4
+            curses.init_pair(4, curses.COLOR_YELLOW, -1)
+            # 5: Red for h5/h6
+            curses.init_pair(5, curses.COLOR_RED, -1)
+            # 6: Magenta for list bullets
+            curses.init_pair(6, curses.COLOR_MAGENTA, -1)
+            # 7: Cyan for table content
+            curses.init_pair(7, curses.COLOR_CYAN, -1)
+        
+        self.render(stdscr, force=True)
         
         while True:
-            self.render(self.current_page * self.lines_per_page)
+            # Check for terminal resize
+            size = self._get_screen_size()
             
             try:
-                console.print()
-                key = console.input("\n[cyan]>[/cyan] ")
-                
-                if not key:
+                key = stdscr.getch()
+                if key == -1:
                     continue
-                    
-                key = key.strip().lower()
                 
-                if key == 'q' or key == 'quit':
+                # Handle special keys
+                if key == ord('q'):
                     break
-                elif key in ['k', '上', '\x1b[A'] or key == '' and False:  # Up - handled below
-                    self.current_page = max(0, self.current_page - 1)
-                elif key in ['j', '下', '\x1b[B']:  # Down
-                    total_pages = (len(self.lines) + self.lines_per_page - 1) // self.lines_per_page
-                    self.current_page = min(total_pages - 1, self.current_page + 1)
-                elif key == 'g':
-                    self.current_page = 0
-                elif key == 'G':
-                    total_pages = (len(self.lines) + self.lines_per_page - 1) // self.lines_per_page
-                    self.current_page = total_pages - 1
-                elif key == 't' or key == 'toc':
-                    self.show_toc()
-                    console.input("\n[dim]Press Enter to continue...[/dim]")
-                elif key == 'h' or key == 'help':
-                    self.show_help()
-                    console.input("\n[dim]Press Enter to continue...[/dim]")
-                elif key == '/':
-                    search_term = console.input("[cyan]Search: [/cyan]")
-                    if search_term:
-                        search_matches = []
-                        for i, line in enumerate(self.lines, 1):
-                            if search_term.lower() in line.lower():
-                                search_matches.append(i)
-                        if search_matches:
-                            console.print(f"[green]Found {len(search_matches)} matches[/green]")
-                            current_search_idx = 0
-                            self.current_page = (search_matches[0] - 1) // self.lines_per_page
-                        else:
-                            console.print(f"[red]No matches found[/red]")
-                            console.input("\n[dim]Press Enter to continue...[/dim]")
-                elif key == 'n' and search_matches:
-                    current_search_idx = (current_search_idx + 1) % len(search_matches)
-                    self.current_page = (search_matches[current_search_idx] - 1) // self.lines_per_page
-                    console.print(f"[dim]Match {current_search_idx + 1}/{len(search_matches)}[/dim]")
-                elif key == 'p' and search_matches:
-                    current_search_idx = (current_search_idx - 1) % len(search_matches)
-                    self.current_page = (search_matches[current_search_idx] - 1) // self.lines_per_page
-                    console.print(f"[dim]Match {current_search_idx + 1}/{len(search_matches)}[/dim]")
-                elif key == 'e':
-                    self._execute_code_blocks()
-                    console.input("\n[dim]Press Enter to continue...[/dim]")
-                elif key.startswith(':') and key[1:].isdigit():
-                    line_num = int(key[1:])
-                    if 1 <= line_num <= len(self.lines):
-                        self.current_page = (line_num - 1) // self.lines_per_page
-                else:
-                    pass
-                    
-            except (KeyboardInterrupt, EOFError):
-                break
+                elif key in [ord('j'), ord('J'), curses.KEY_DOWN]:
+                    self.scroll_down(1)
+                elif key in [ord('k'), ord('K'), curses.KEY_UP]:
+                    self.scroll_up(1)
+                elif key == ord(' '):
+                    size = self._get_screen_size()
+                    self.scroll_down(size.lines - 5)
+                elif key in [ord('b'), ord('B'), curses.KEY_PPAGE]:
+                    size = self._get_screen_size()
+                    self.scroll_up(size.lines - 5)
+                elif key in [ord('g')]:
+                    self.scroll_to_top()
+                elif key in [ord('G')]:
+                    self.scroll_to_bottom()
+                elif key == ord('/'):
+                    self.do_search(stdscr)
+                elif key in [ord('n'), ord('N')]:
+                    if key == ord('n'):
+                        self.next_search()
+                    else:
+                        self.prev_search()
+                elif key in [ord('t'), ord('T')]:
+                    self.show_toc(stdscr)
+                elif key in [ord('h'), ord('H')]:
+                    self.show_help(stdscr)
+                elif key in [ord('e'), ord('E')]:
+                    self.execute_code_blocks(stdscr)
+                
+                self.render(stdscr)
+                
+            except curses.error:
+                pass
         
-        console.print("[dim]Goodbye![/dim]")
-    
-    def _search(self, term: str):
-        """Search for term in file"""
-        if not term:
-            return
-        
-        matches = []
-        for i, line in enumerate(self.lines, 1):
-            if term.lower() in line.lower():
-                matches.append((i, line.strip()))
-        
-        if matches:
-            console.print(f"\n[cyan]Found {len(matches)} matches:[/cyan]")
-            for line_num, line in matches[:20]:
-                console.print(f"[dim]{line_num:4d}:[/dim] {line}")
-        else:
-            console.print(f"\n[red]No matches found for '{term}'[/red]")
-    
-    def _show_line(self, line_num: int):
-        """Show specific line with context"""
-        start = max(0, line_num - 5)
-        end = min(len(self.lines), line_num + 5)
-        
-        for i in range(start, end):
-            prefix = ">>> " if i == line_num - 1 else "    "
-            console.print(f"[dim]{i+1:4d}:[/dim] {prefix}{self.lines[i]}")
+        curses.endwin()
 
 
 def main():
@@ -379,38 +504,64 @@ def main():
     @click.argument('file', type=click.Path(exists=True))
     @click.option('--execute', '-e', is_flag=True, help='Execute code blocks')
     @click.option('--toc', '-t', is_flag=True, help='Show table of contents')
-    @click.option('--line', '-l', type=int, help='Jump to specific line')
     @click.option('--theme', '-m', default='monokai', help='Syntax highlighting theme')
     @click.option('--interactive', '-i', is_flag=True, help='Interactive mode')
     @click.option('--search', '-s', type=str, help='Search in file')
-    @click.option('--page', '-p', type=int, help='Go to specific page')
-    @click.version_option(version='0.3.0', prog_name='mdx')
-    def cli(file: str, execute: bool, toc: bool, line: int, theme: str, interactive: bool, search: str, page: int):
+    @click.version_option(version='0.6.0', prog_name='mdx')
+    def cli(file: str, execute: bool, toc: bool, theme: str, interactive: bool, search: str):
         """
-        MDX - A beautiful Markdown viewer for terminal
+        MDX - A beautiful Markdown viewer for terminal (curses-based)
         
-        Example:
-            mdx README.md
-            mdx README.md --execute
-            mdx README.md --toc
-            mdx README.md -i
+        Use -i for interactive mode (like less)
         """
         viewer = MDXViewer(file, execute=execute, theme=theme)
         
         if search:
-            viewer._search(search)
+            # Search only
+            for i, line in enumerate(viewer.display_lines, 1):
+                if search.lower() in line.lower():
+                    print(f"{i:4d}: {line}")
         elif toc:
-            viewer.show_toc()
+            # Show TOC - use rich for pretty display
+            try:
+                from rich.console import Console
+                from rich.table import Table
+                console = Console()
+                
+                toc = []
+                for i, line in enumerate(viewer.lines):
+                    match = re.match(r'^(#{1,6})\s+(.+)$', line)
+                    if match:
+                        level = len(match.group(1))
+                        title = match.group(2).strip()
+                        toc.append((i + 1, level, title))
+                
+                if toc:
+                    table = Table(title="Table of Contents")
+                    table.add_column("Line", style="dim", width=6)
+                    table.add_column("Title", style="cyan")
+                    
+                    for line_num, level, title in toc:
+                        indent = "  " * (level - 1)
+                        table.add_row(str(line_num), f"{indent}{title}")
+                    
+                    console.print(table)
+            except:
+                # Fallback
+                for i, line in enumerate(viewer.lines):
+                    match = re.match(r'^(#{1,6})\s+(.+)$', line)
+                    if match:
+                        print(f"{i+1}: {match.group(2)}")
         elif interactive:
-            viewer.interactive()
-        elif line:
-            lines_per_page = console.height - 12
-            viewer.current_page = (line - 1) // lines_per_page
-            viewer.render(viewer.current_page * lines_per_page)
-        elif page:
-            viewer.render((page - 1) * (console.height - 12))
+            # Interactive mode with curses
+            def run_interactive(stdscr):
+                viewer.interactive(stdscr)
+            curses.wrapper(run_interactive)
         else:
-            viewer.render()
+            # Default: show all content
+            for line in viewer.display_lines:
+                if line.strip():
+                    print(line)
     
     cli()
 
