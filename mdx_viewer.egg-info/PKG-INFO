@@ -1,11 +1,11 @@
 Metadata-Version: 2.4
-Name: mdx
+Name: mdx-viewer
 Version: 0.2.0
 Summary: A beautiful Markdown viewer for terminal with code execution support
 Author-email: Your Name <you@example.com>
 License: MIT
-Project-URL: Homepage, https://github.com/yourname/mdx
-Project-URL: Repository, https://github.com/yourname/mdx
+Project-URL: Homepage, https://github.com/mmx8lb/mdx
+Project-URL: Repository, https://github.com/mmx8lb/mdx
 Keywords: markdown,terminal,cli,viewer
 Classifier: Development Status :: 3 - Alpha
 Classifier: Intended Audience :: Developers

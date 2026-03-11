@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mdx"
+name = "mdx-viewer"
 version = "0.2.0"
 description = "A beautiful Markdown viewer for terminal with code execution support"
 authors = [
@@ -36,8 +36,8 @@ dependencies = [
 mdx = "mdx.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/yourname/mdx"
-Repository = "https://github.com/yourname/mdx"
+Homepage = "https://github.com/mmx8lb/mdx"
+Repository = "https://github.com/mmx8lb/mdx"
 
 [tool.setuptools.packages.find]
 where = ["."]
