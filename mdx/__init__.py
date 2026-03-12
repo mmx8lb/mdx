@@ -2,6 +2,8 @@
 
 __version__ = "0.1.0"
 
-from mdx.cli import main
+from .cli import main
+from .parser import MarkdownParser
+from .renderer import TerminalRenderer
 
-__all__ = ["main"]
+__all__ = ["main", "MarkdownParser", "TerminalRenderer"]
