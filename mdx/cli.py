@@ -156,7 +156,7 @@ def main():
     """Main entry point"""
     @click.command()
     @click.argument('file', type=click.Path(exists=True))
-    @click.version_option(version='1.0.0', prog_name='mdx')
+    @click.version_option(version='0.1.0', prog_name='mdx')
     def cli(file):
         """MDX - Markdown Viewer for Terminal
         
