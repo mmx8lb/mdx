@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+env/
+.env/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+mdx_viewer.egg-info/
+
+# PyPI related
+MANIFEST
+MANIFEST.in
+
+# Wheel files
+*.whl
+
+# Testing
+.pytest_cache/
+.coverage
+coverage.xml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Trae
+.trae/
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# dev docs
+.devdocs/
+
+# test
+.test/
