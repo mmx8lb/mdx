@@ -48,7 +48,10 @@ Thumbs.db
 *.temp
 
 # dev docs
-.devdocs/
+devdocs/
 
 # test
-.test/
+test_*.py
+
+# dependencies
+requirements.txt
